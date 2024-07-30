@@ -1,0 +1,49 @@
+{
+    "configurations": [
+        {
+            "type": "java",
+            "name": "LibreriaApplication",
+            "request": "launch",
+            "mainClass": "com.example.libreria.Amain.LibreriaApplication",
+            "projectName": "libreria"
+        },
+        {
+            "type": "java",
+            "name": "LibreriaApplication",
+            "request": "launch",
+            "mainClass": "com.example.libreria.Main.LibreriaApplication",
+            "projectName": "libreria"
+        },
+        {
+            "type": "java",
+            "name": "LibreriaApplication",
+            "request": "launch",
+            "mainClass": "com.example.LibreriaApplication",
+            "projectName": "libreria"
+        },
+        {
+            "type": "java",
+            "name": "LibreriaApplication",
+            "request": "launch",
+            "mainClass": "com.example.libreria.entidad.servicios.LibreriaApplication",
+            "projectName": "libreria"
+        },
+        {
+            "name": "Launch Chrome",
+            "request": "launch",
+            "type": "chrome",
+            "url": "http://localhost:8080",
+            "webRoot": "${workspaceFolder}"
+        },
+        {
+            "type": "java",
+            "name": "Spring Boot-LibreriaApplication<libreria>",
+            "request": "launch",
+            "cwd": "${workspaceFolder}",
+            "mainClass": "com.example.libreria.LibreriaApplication",
+            "projectName": "libreria",
+            "args": "",
+            "envFile": "${workspaceFolder}/.env"
+        }
+    ]
+}
