@@ -1,0 +1,9 @@
+GREETING Hola, mi nombre es Pepo, en que puedo ayudarte?	
+QUESTION ¿Cual es la capital de Argentina?
+GOODBYE Adios!, espero haber sido de ayuda. 
+
+GREETING Hola, soy Sofi, donde quieres ir a pasear?
+QUESTION ¿Se puede ir a estancia Tunel?
+GOODBYE Adios!, espero haber sido de ayuda. 
+
+

@@ -1,0 +1,1141 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Stack que despliega Odoo 17 
+
+Parameters:
+  RepositoryName:
+    Type: String
+    Default: odoo-test-g3
+    Description: The name of the CodeCommit repository
+  LogGroupName:
+    Type: String
+    Default: '/aws/codebuild/odoo-g3-pipeline-extra'
+    Description: 'The name of log group for CodeBuild'
+  
+  DBName:
+    Type: String
+    Description: Nombre de la base de datos
+    Default: postgres
+  
+  VPC:
+    Type: AWS::EC2::VPC::Id
+    Description: ID de la VPC
+    Default: 'vpc-07a851eb7ed05086f' 
+  SubnetId1:
+    Type: AWS::EC2::Subnet::Id
+    Description: ID de la primera subnet privada 
+    Default: 'subnet-097942794afb0ddf3'
+  SubnetId2:
+    Type: AWS::EC2::Subnet::Id
+    Description: ID de la segunda subnet privada 
+    Default: 'subnet-068458524a5553609'
+  SubnetId1ELB:
+    Type: AWS::EC2::Subnet::Id
+    Description: ID de la subnet publica ELB
+    Default: 'subnet-0e92ddf1b65f3413c'
+  SubnetId2ELB:
+    Type: AWS::EC2::Subnet::Id
+    Description: ID de la subnet publica ELB
+    Default: 'subnet-0ab13a6615aa6a6a1'
+  
+  SSHLocation:
+    Description: The IP address range that can be used to SSH to the EC2 instances
+    Type: String
+    Default: 0.0.0.0/0
+    MinLength: "9"
+    MaxLength: "18"
+    AllowedPattern: (\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+
+  ECRImageUri:
+    Type: String
+    Default: '844045035952.dkr.ecr.us-east-1.amazonaws.com/odoo17-image-g3'
+    Description: ECR Docker odoo URI image 
+  #Hook de slack
+  SlackWebhookURL:
+    Type: String
+    Description: The URL of the slack webhook
+    Default: 'https://hooks.slack.com/services/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'
+  
+
+Resources:
+  OdooTaskDefinitionextra:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: "odoo"
+      Cpu: "1024"
+      Memory: "2048"
+      NetworkMode: awsvpc
+      RuntimePlatform:
+        OperatingSystemFamily: LINUX
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt TaskExecutionRoleG3extra.Arn
+      ContainerDefinitions:
+        - Name: odoo
+          Image: !Ref ECRImageUri
+          Essential: true
+          #HealthCheck:
+            #Command: ["CMD-SHELL", "curl -f http://localhost/ >> /proc/1/fd/1 2>&1  || exit 1"]
+            #Interval: 10
+            #Retries: 3
+            #Timeout: 5
+          PortMappings:
+            - ContainerPort: 8069
+              HostPort: 8069
+              Protocol: tcp
+          Environment:
+            - Name: HOST
+              Value: !GetAtt OdooPostgreSQLDBextra.Endpoint.Address
+            - Name: PORT
+              Value: 5432
+            - Name: USER
+              Value: !Join ['', ['{{resolve:secretsmanager:', !Ref RDSDBCredentialsSecretextra, ':SecretString:username}}' ]]
+            - Name: PASSWORD
+              Value: !Join ['', ['{{resolve:secretsmanager:', !Ref RDSDBCredentialsSecretextra, ':SecretString:password}}' ]]
+            - Name: POSTGRES_DB
+              Value: !Ref DBName
+          MountPoints:
+            - SourceVolume: filestore
+              ContainerPath: /var/lib/odoo
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref OdooLogGroupextra
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+      TaskRoleArn: !Ref TaskRoleECSextra
+      Volumes:
+        - Name: filestore
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref OdooEFSextra
+            RootDirectory: /
+            TransitEncryption: ENABLED
+            AuthorizationConfig:
+              AccessPointId: !Ref AccessPointResource
+  
+  TaskRoleECSextra:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service: 'ecs-tasks.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      Path: '/'
+      Policies:
+        - PolicyName: 'ecsTaskExecutionRolePolicy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                  - 'ssm:GetParameters'
+                  - "ssmmessages:CreateControlChannel"
+                  - "ssmmessages:CreateDataChannel"
+                  - "ssmmessages:OpenControlChannel"
+                  - "ssmmessages:OpenDataChannel"
+                  - 'ecs:ExecuteCommand'
+                Resource: '*'
+
+  
+  TaskExecutionRoleG3extra:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service: 'ecs-tasks.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      Path: '/'
+      Policies:
+        - PolicyName: 'ecsTaskExecutionRolePolicy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                  - 'ecr:GetAuthorizationToken'
+                  - 'ecr:BatchCheckLayerAvailability'
+                  - 'ecr:GetDownloadUrlForLayer'
+                  - 'ecr:BatchGetImage'
+                  - 'ecr:GetRepositoryPolicy'
+                  - 'ecr:DescribeRepositories'
+                  - 'ecr:ListImages'
+                  - 'ecr:DescribeImages'
+                  - 'ecr:GetLifecyclePolicy'
+                  - 'ecr:GetLifecyclePolicyPreview'
+                  - 'ecr:ListTagsForResource'
+                  - 'ecr:DescribeImageScanFindings'
+                  - "ecr:InitiateLayerUpload"
+                  - "ecr:CompleteLayerUpload"
+                  - "ecr:UploadLayerPart"
+                  - "ecr:PutImage"
+                  - 'logs:CreateLogStream'
+                  - 'logs:CreateLogGroup'
+                  - 'logs:PutLogEvents'
+                  - 'elasticfilesystem:ClientMount'
+                  - 'elasticfilesystem:ClientWrite'
+                  - 'elasticfilesystem:ClientRootAccess'
+                  - 'elasticfilesystem:DescribeMountTargets'
+                  - 'elasticfilesystem:DescribeFileSystems'
+                  - 'secretsmanager:GetSecretValue'
+                  - 's3:GetBucketLocation'
+                  - 'kms:Decrypt'
+                  - 'ssm:GetParameters'
+                  - "ssmmessages:CreateControlChannel"
+                  - "ssmmessages:CreateDataChannel"
+                  - "ssmmessages:OpenControlChannel"
+                  - "ssmmessages:OpenDataChannel"
+                  - 'ecs:ExecuteCommand'
+                Resource: '*'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMReadOnlyAccess
+        - arn:aws:iam::aws:policy/SecretsManagerReadWrite
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser
+        - arn:aws:iam::aws:policy/AmazonRDSDataFullAccess
+    
+  OdooLogGroupextra:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/odoo/extra
+      RetentionInDays: 7
+  
+  OdooClusterextra:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: 'ECSClusterOdooG3extra'
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+      CapacityProviders:
+        - FARGATE
+        - FARGATE_SPOT
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Weight: 1
+        - CapacityProvider: FARGATE_SPOT
+          Weight: 1
+      Tags:
+        - Key: Name
+          Value: ecs-cluster-g3
+
+  OdooEcsServiceextra:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: 'odoo'
+      Cluster: !Ref OdooClusterextra
+      TaskDefinition: !Ref OdooTaskDefinitionextra
+      LaunchType: FARGATE
+      PlatformVersion: LATEST
+      DesiredCount: 1
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets:
+            - !Ref SubnetId1
+            - !Ref SubnetId2
+          SecurityGroups:
+            - !GetAtt SecurityGroupECSextra.GroupId
+          AssignPublicIp: DISABLED
+      LoadBalancers:
+        - ContainerName: odoo
+          ContainerPort: 8069
+          TargetGroupArn: !Ref ALBTargetGroupextra
+      Tags:
+        - Key: Name
+          Value: "ECSService-G3-extra"
+  
+  
+  SecurityGroupECSextra:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: SG for ECS
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: 'tcp'
+          FromPort: 8069
+          ToPort: 8069
+          SourceSecurityGroupId: !GetAtt SecurityGroupALBextra.GroupId
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref SSHLocation
+  
+  OdooPipelineG3:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: 'odoo-g3-pipeline-extra' 
+      RoleArn: !GetAtt CodeBuildRole.Arn
+      PipelineType: V2
+      ExecutionMode: QUEUED
+      ArtifactStore:
+          Type: S3
+          Location: !Ref ArtifactStoreS3Location
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              InputArtifacts: []
+              RunOrder: 1
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: '1'
+              OutputArtifacts:
+                - Name: SourceOutput
+              Configuration:
+                RepositoryName: !Ref RepositoryName
+                BranchName: master
+        - Name: Build
+          Actions:
+            - Name: odoo
+              RunOrder: 1
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: 1
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: BuildOutput
+              Configuration:
+                ProjectName: !Ref CodeBuildProject
+        - Name: Deploy
+          Actions:
+            - Name: DeployAction
+              RunOrder: 1
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: ECS
+                Version: '1'
+              InputArtifacts:
+                - Name: BuildOutput
+              Configuration:
+                ClusterName: !Ref OdooClusterextra
+                ServiceName: 'odoo'
+                FileName: imagedefinitions.json  # Replace if needed, used to define the Docker image(s) to deploy
+            
+        
+  
+  CodeBuildProject:
+      Type: AWS::CodeBuild::Project
+      Properties:
+        Name: Odoo
+        Description: The build for odoo app g3
+        ServiceRole: !GetAtt CodeBuildRole.Arn
+        Source:
+          Type: CODEPIPELINE 
+          BuildSpec: buildspec.yml
+        Artifacts:
+          Type: CODEPIPELINE 
+        Environment:         
+          ComputeType: BUILD_GENERAL1_SMALL
+          Image: "aws/codebuild/amazonlinux2-x86_64-standard:5.0"
+          Type: LINUX_CONTAINER
+          PrivilegedMode: true
+          EnvironmentVariables:
+            - Name: SECRET_NAME
+              Value: !GetAtt RDSDBCredentialsSecretextra.Id
+              Type: PLAINTEXT
+            - Name: AWS_DEFAULT_REGION
+              Value: !Ref AWS::Region
+              Type: PLAINTEXT
+            - Name: IMAGE_TAG
+              Value: latest
+              Type: PLAINTEXT
+            - Name: AWS_ACCOUNT_ID
+              Value: !Ref AWS::AccountId
+              Type: PLAINTEXT    
+        LogsConfig:
+            CloudWatchLogs:
+                GroupName: !Ref OdooLogGroupextra
+                StreamName: !Sub codeBuildProject-${RepositoryName}
+                Status: ENABLED
+
+#Role to CodeDeploy
+#arn:aws:iam::aws:policy/AWSCodeDeployRoleForECS
+  
+  
+  ArtifactStoreS3Location:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: 'odoo-g3-bucket-extra'
+      VersioningConfiguration:
+          Status: Enabled
+
+  CodeBuildRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service: 
+                - 'codepipeline.amazonaws.com'
+                - 'codebuild.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: 'CodeBuildPolicy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                  - 'logs:DescribeLogGroups'
+                  - 'logs:DescribeLogStreams'
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${LogGroupName}*'
+              - Effect: 'Allow'
+                Action:
+                  - 'logs:PutLogEvents'
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${LogGroupName}'
+              - Effect: 'Allow'
+                Action:
+                  - 's3:GetObject'
+                  - 's3:GetObjectVersion'
+                  - 's3:PutObject'
+                  - 's3:ListBucket'
+                  - 's3:GetBucketVersioning'
+                Resource: 
+                  - !GetAtt ArtifactStoreS3Location.Arn
+                  - !Sub "${ArtifactStoreS3Location.Arn}/*"
+              - Effect: 'Allow'
+                Action:
+                  - 'codecommit:GitPull'
+                  - 'codecommit:GetBranch'
+                  - 'codecommit:GetCommit'
+                  - 'codecommit:GetRepository'
+                  - 'codecommit:ListBranches'
+                  - 'codecommit:ListRepositories'
+                  - 'codecommit:UploadArchive'
+                  - 'codecommit:GetUploadArchiveStatus'
+                Resource: !Sub 'arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${RepositoryName}'
+              - Effect: 'Allow'
+                Action:
+                  - 'codebuild:StartBuild'
+                  - 'codebuild:BatchGetBuilds'
+                  - 'codebuild:BatchGetProjects'
+                  - 'codebuild:ListBuildsForProject'
+                Resource: "*"
+              - Effect: 'Allow'
+                Action:
+                  - 'codedeploy:CreateDeployment'
+                  - 'codedeploy:GetApplicationRevision'
+                  - 'codedeploy:GetDeployment'
+                  - 'codedeploy:GetDeploymentConfig'
+                  - 'codedeploy:RegisterApplicationRevision'
+                  - 'codestar-notifications:*'
+                  - 'sns:Publish'
+                Resource: "*"
+              - Effect: 'Allow'
+                Action:
+                  - "ecr:GetAuthorizationToken"
+                  - "ecr:BatchCheckLayerAvailability"
+                  - "ecr:GetDownloadUrlForLayer" 
+                  - "ecr:BatchGetImage"
+                  - "ecr:InitiateLayerUpload"
+                  - "ecr:CompleteLayerUpload"
+                  - "ecr:UploadLayerPart"
+                  - "ecr:PutImage"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents" 
+                  - 'elasticfilesystem:ClientMount'
+                  - 'elasticfilesystem:ClientWrite'
+                  - 'elasticfilesystem:ClientRootAccess'
+                  - 'elasticfilesystem:DescribeMountTargets'
+                  - 'elasticfilesystem:DescribeFileSystems'
+                  - 'secretsmanager:GetSecretValue'
+                  - 's3:GetBucketLocation'
+                  - 'kms:Decrypt'
+                  - 'ssm:GetParameters'  
+                Resource: "*"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMReadOnlyAccess
+        - arn:aws:iam::aws:policy/SecretsManagerReadWrite
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforAWSCodeDeploy
+        - arn:aws:iam::aws:policy/service-role/AWSCodeDeployRole
+        - arn:aws:iam::aws:policy/AWSCodeDeployRoleForECS
+        - arn:aws:iam::aws:policy/AmazonECS_FullAccess
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser
+  
+  LoadBalancerextra:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: 'ALB-G3-extra'
+      Subnets:
+        - !Ref SubnetId1ELB
+        - !Ref SubnetId2ELB
+      SecurityGroups:
+        - !GetAtt SecurityGroupALBextra.GroupId
+      Scheme: internet-facing
+      Tags:
+        - Key: Nombre
+          Value: "ELB-G3-extra"
+          
+  ALBTargetGroupextra:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: ALBTargetGroup-G3-extra
+      HealthCheckEnabled: true
+      VpcId: !Ref VPC
+      Matcher: 
+        HttpCode: 200,202,301,302,303,400,404
+      Port: 8069
+      Protocol: HTTP
+      TargetType: ip
+      TargetGroupAttributes:
+        - Key: stickiness.enabled
+          Value: "false"
+      HealthCheckProtocol: HTTP
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 5
+      UnhealthyThresholdCount: 2
+
+  ALBListenerextra:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancerextra
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ALBTargetGroupextra
+  
+  SecurityGroupALBextra:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: SG for ALB
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  ####### EFS Config ######## 
+  
+  OdooEFSextra:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      AvailabilityZoneName: us-east-1a
+      PerformanceMode: generalPurpose
+      Encrypted: true
+      FileSystemTags:
+        - Key: Nombre
+          Value: "EFS-G3-extra"
+      FileSystemPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action:
+              - "elasticfilesystem:ClientMount"
+              - "elasticfilesystem:ClientWrite"
+              - "elasticfilesystem:ClientRootAccess"
+            Principal:
+              AWS: "*"
+            Resource:
+              - "*"
+
+  EFSMountTarget1G3extra:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref OdooEFSextra
+      SubnetId: !Ref SubnetId1
+      SecurityGroups:
+      - !Ref EFSSecurityGroupextra
+  
+  
+  
+  AccessPointResource:
+    Type: 'AWS::EFS::AccessPoint'
+    Properties:
+      FileSystemId: !Ref OdooEFSextra
+      PosixUser:
+        Uid: 4
+        Gid: 22
+      RootDirectory:
+        CreationInfo:
+          OwnerGid: 0
+          OwnerUid: 11
+          Permissions: '0777'
+        Path: '/var/lib/odoo'
+      AccessPointTags:
+        - Key: Name
+          Value: "EFS-AP-G3-extra"
+
+  
+  EFSSecurityGroupextra:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: 'EFS Security Group'
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          Description: Allow inbound connections on port 2049 NFS from the security group associated with your Fargate task or service
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !GetAtt SecurityGroupECSextra.GroupId
+  
+  ###### DATA BASE #######  
+
+  OdooPostgreSQLDBextra:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      Engine: postgres
+      EngineVersion: 15.7
+      DBInstanceClass: db.t3.micro
+      AllocatedStorage: 20
+      DBName: !Ref DBName
+      DBSubnetGroupName: !Ref DBSubnetGroupextra
+      MasterUsername: !Join ['', ['{{resolve:secretsmanager:', !Ref RDSDBCredentialsSecretextra, ':SecretString:username}}' ]]
+      MasterUserPassword: !Join ['', ['{{resolve:secretsmanager:', !Ref RDSDBCredentialsSecretextra, ':SecretString:password}}' ]]
+      VPCSecurityGroups:
+        - !Ref OdooPostgreSQLSecurityGroupextra
+      Tags:
+        - Key: Name
+          Value: "Postgre-G3-extra"
+  
+  OdooPostgreSQLSecurityGroupextra:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: 'DB Security Group'
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: 'tcp'
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: '0.0.0.0/0'
+
+  ###### SECRETS MANAGER #######
+
+  RDSDBCredentialsSecretextra:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: Secret for RDS DB credentials
+      GenerateSecretString:
+        SecretStringTemplate: '{"username":"odoo"}'
+        GenerateStringKey: "password"
+        PasswordLength: 16
+        ExcludePunctuation: True
+  
+  SecretRDSInstanceAttachmentextra:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Properties:
+        SecretId: !Ref RDSDBCredentialsSecretextra
+        TargetId: !Ref OdooPostgreSQLDBextra
+        TargetType: AWS::RDS::DBInstance
+  
+  DBSubnetGroupextra:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet Group G3
+      SubnetIds:
+        - !Ref SubnetId1
+        - !Ref SubnetId2
+
+##################### Monitoring ############################
+
+# Cloudwatch WebServer Alarms
+
+  CPUAlarmG3:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: CPU alarm for my instance
+      AlarmActions:
+        - !Ref SNSCWTopic
+      MetricName: CPUUtilization
+      Namespace: AWS/ECS
+      Statistic: Average
+      Period: '300'
+      EvaluationPeriods: 2
+      Threshold: '80'
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: "ClusterName"
+          Value: !Ref OdooClusterextra
+        - Name: "ServiceName"
+          Value: !GetAtt OdooEcsServiceextra.Name
+  
+  CloudwatchMemoryAlarmG3:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Alarm when WebServer memory exceeds 90%
+      AlarmActions:
+        - !Ref SNSCWTopic
+      Namespace: AWS/ECS
+      MetricName: mem_used_percent
+      Dimensions:
+        - Name: "ClusterName"
+          Value: !Ref OdooClusterextra
+        - Name: "ServiceName"
+          Value: !GetAtt OdooEcsServiceextra.Name
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 5
+      Threshold: 80
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+  
+  
+#Cloudwatch RDS alarms
+
+  RDSCloudWatchCPUAlarmG3:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Alarm when RDS CPU exceeds 90%
+      AlarmActions:
+        - !Ref SNSCWTopic
+      Namespace: AWS/RDS
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref OdooPostgreSQLDBextra
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 90
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+
+  RDSCloudWatchAlarmRDSMemoryG3:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Alarm when RDS memory exceeds 90%
+      AlarmActions:
+        - !Ref SNSCWTopic
+      Namespace: AWS/RDS
+      MetricName: FreeableMemory
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref OdooPostgreSQLDBextra
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 104857600 # 100 MB
+      ComparisonOperator: LessThanThreshold
+  
+# CloudWatch Alerts to Application Load Balancer
+
+  CloudWatchAlarmAppLoadBalancerG3:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Alarm when the number of 5xx errors on the ELB exceeds 10 in 5 minutes
+      AlarmActions:
+        - !Ref SNSCWTopic
+      Namespace: AWS/ApplicationELB
+      MetricName: HTTPCode_ELB_5XX_Count
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt LoadBalancerextra.LoadBalancerFullName
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 10
+      ComparisonOperator: GreaterThanThreshold
+  
+  SlackCWNotificationFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Handler: "lambda_function.lambda_handler"
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: "python3.9"
+      Code:
+        ZipFile: !Sub |
+          import urllib3
+          import json
+
+
+          slack_url = "${SlackWebhookURL}"
+          http = urllib3.PoolManager()
+
+
+          def get_alarm_attributes(sns_message):
+              alarm = dict()
+
+              alarm['name'] = sns_message['AlarmName']
+              alarm['description'] = sns_message['AlarmDescription']
+              alarm['reason'] = sns_message['NewStateReason']
+              alarm['region'] = sns_message['${AWS::Region}']
+              alarm['instance_id'] = sns_message['Trigger']['Dimensions'][0]['value']
+              alarm['state'] = sns_message['NewStateValue']
+              alarm['previous_state'] = sns_message['OldStateValue']
+
+              return alarm
+
+
+          def register_alarm(alarm):
+              return {
+                  "type": "home",
+                  "blocks": [
+                      {
+                          "type": "header",
+                          "text": {
+                              "type": "plain_text",
+                              "text": ":warning: " + alarm['name'] + " alarm was registered"
+                          }
+                      },
+                      {
+                          "type": "divider"
+                      },
+                      {
+                          "type": "section",
+                          "text": {
+                              "type": "mrkdwn",
+                              "text": "_" + alarm['description'] + "_"
+                          },
+                          "block_id": "text1"
+                      },
+                      {
+                          "type": "divider"
+                      },
+                      {
+                          "type": "context",
+                          "elements": [
+                              {
+                                  "type": "mrkdwn",
+                                  "text": "Region: *" + alarm['region'] + "*"
+                              }
+                          ]
+                      }
+                  ]
+              }
+
+
+          def activate_alarm(alarm):
+              return {
+                  "type": "home",
+                  "blocks": [
+                      {
+                          "type": "header",
+                          "text": {
+                              "type": "plain_text",
+                              "text": ":red_circle: Alarm: " + alarm['name'],
+                          }
+                      },
+                      {
+                          "type": "divider"
+                      },
+                      {
+                          "type": "section",
+                          "text": {
+                              "type": "mrkdwn",
+                              "text": "_" + alarm['reason'] + "_"
+                          },
+                          "block_id": "text1"
+                      },
+                      {
+                          "type": "divider"
+                      },
+                      {
+                          "type": "context",
+                          "elements": [
+                              {
+                                  "type": "mrkdwn",
+                                  "text": "Region: *" + alarm['region'] + "*"
+                              }
+                          ]
+                      }
+                  ]
+              }
+
+
+          def resolve_alarm(alarm):
+              return {
+                  "type": "home",
+                  "blocks": [
+                      {
+                          "type": "header",
+                          "text": {
+                              "type": "plain_text",
+                              "text": ":large_green_circle: Alarm: " + alarm['name'] + " was resolved",
+                          }
+                      },
+                      {
+                          "type": "divider"
+                      },
+                      {
+                          "type": "section",
+                          "text": {
+                              "type": "mrkdwn",
+                              "text": "_" + alarm['reason'] + "_"
+                          },
+                          "block_id": "text1"
+                      },
+                      {
+                          "type": "divider"
+                      },
+                      {
+                          "type": "context",
+                          "elements": [
+                              {
+                                  "type": "mrkdwn",
+                                  "text": "Region: *" + alarm['region'] + "*"
+                              }
+                          ]
+                      }
+                  ]
+              }
+
+
+          def lambda_handler(event, context):
+              sns_message = json.loads(event["Records"][0]["Sns"]["Message"])
+              alarm = get_alarm_attributes(sns_message)
+
+              msg = str()
+
+              if alarm['previous_state'] == "INSUFFICIENT_DATA" and alarm['state'] == 'OK':
+                  msg = register_alarm(alarm)
+              elif alarm['previous_state'] == 'OK' and alarm['state'] == 'ALARM':
+                  msg = activate_alarm(alarm)
+              elif alarm['previous_state'] == 'ALARM' and alarm['state'] == 'OK':
+                  msg = resolve_alarm(alarm)
+
+              encoded_msg = json.dumps(msg).encode("utf-8")
+              resp = http.request("POST", slack_url, body=encoded_msg)
+              print(
+                  {
+                      "message": msg,
+                      "status_code": resp.status,
+                      "response": resp.data,
+                  }
+              )
+
+  SNSCWTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: OdooPipelineNotificationG3CW
+      Subscription:
+        - Protocol: lambda
+          Endpoint: !GetAtt SlackCWNotificationFunction.Arn
+  
+  SNSCWToLambdaSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: !GetAtt SlackCWNotificationFunction.Arn
+      Protocol: lambda
+      TopicArn: !Ref SNSCWTopic
+  
+  LambdaInvokePermissionCW:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt SlackCWNotificationFunction.Arn
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref SNSCWTopic
+  
+  SNSCWTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - Effect: "Allow"
+            Principal: 
+              Service: "cloudwatch.amazonaws.com"
+            Action: "SNS:Publish"
+            Resource: !Ref SNSCWTopic
+      Topics: 
+        - !GetAtt SNSCWTopic.TopicArn
+
+  
+  ########### Pipeline Activity Messages ###############
+
+  # IAM Role for Lambda
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 
+                - lambda.amazonaws.com
+                - codestar-notifications.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaExecutionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: arn:aws:logs:*:*:*
+              - Effect: Allow
+                Action:
+                  - sns:Subscribe
+                  - sns:Receive
+                  - sns:ListSubscriptionsByTopic
+                  - sns:GetTopicAttributes
+                  - sns:Publish
+                Resource: '*'
+            
+  # Lambda Function
+  SlackOdooNotificationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.9
+      Timeout: 30
+      Code:
+        ZipFile: !Sub |
+          import json
+          import os
+
+          import urllib3
+
+          http = urllib3.PoolManager()
+
+       
+          def gen_message_from_codepipeline_event(event_dict):
+              """
+              Return message according to the CodePipeline state.
+              """
+
+              # No message when SUCCEEDED
+              if event_dict["detail"]["state"] == "SUCCEEDED":
+                  return ""
+
+              if event_dict["detail"]["state"] == "FAILED":
+                  message = "CodePipeline state: FAILED"
+
+                  failed_stage = event_dict.get("additionalAttributes", {}).get("failedStage")
+                  stage_info = (
+                      f"Failed Stage: {failed_stage}"
+                      if failed_stage
+                      else "Failed Stage: N/A"
+                  )
+                  message += f"\n{stage_info}"
+
+                  failed_actions = event_dict.get("additionalAttributes", {}).get("failedActions")
+                  if failed_actions:
+                      # Send only the last try info
+                      info_last_action = failed_actions[-1]['additionalInformation']
+                      message += f"\nInformation: {info_last_action}"
+
+                  return message
+
+
+          def handler(event, context):
+              """
+              Handle CodePipeline notifications and send messages to Slack.
+              """
+              WEBHOOK_URL_SLACK = "${SlackWebhookURL}"
+
+              try:
+                  event_str = event["Records"][0]["Sns"]["Message"]
+              except (KeyError, IndexError):
+                  print("Error: Event is missing required data")
+                  return
+
+              event_dict = json.loads(event_str)
+
+              # generate message
+              message = gen_message_from_codepipeline_event(event_dict)
+              if not message:
+                  print({"statusCode": 200, "body": "No message to return."})
+                  return
+              region = event_dict["region"]
+              pipeline = event_dict["detail"]["pipeline"]
+              pipeline_url = f"https://${AWS::Region}.console.aws.amazon.com/codesuite/codepipeline/pipelines/${OdooPipelineG3}/view?region=${AWS::Region}"
+
+              # Send Slack webhook
+              text = f"{message}\n<{pipeline_url}|Visit CodePipeline>"
+              msg = {
+                  "channel": "#proyecto",
+                  "username": "WEBHOOK_USERNAME",
+                  "text": text,
+              }
+              encoded_msg = json.dumps(msg).encode("utf-8")
+              resp = http.request("POST", WEBHOOK_URL_SLACK, body=encoded_msg)
+              print({"statusCode": resp.status, "body": "Send message."})
+
+              return
+              
+  # Create SNS Topic
+  SNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: OdooPipelineNotificationG3Extra
+      Subscription:
+        - Protocol: lambda
+          Endpoint: !GetAtt SlackOdooNotificationFunction.Arn
+       
+
+  # SNS Topic Policy to allow publishing
+  SNSTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - Effect: "Allow"
+            Principal: 
+              Service: "codestar-notifications.amazonaws.com"
+            Action: "SNS:Publish"
+            Resource: !Ref SNSTopic
+      Topics: 
+        - !GetAtt SNSTopic.TopicArn
+
+  # SNS Subscription to Lambda
+  SNSToLambdaSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: !GetAtt SlackOdooNotificationFunction.Arn
+      Protocol: lambda
+      TopicArn: !Ref SNSTopic
+  
+
+  # Grant Lambda Permission to be invoked by SNS
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt SlackOdooNotificationFunction.Arn
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref SNSTopic
+  
+  
+  # Notification rules for CodePipeline
+  PipelineNotificationRuleG3:
+    Type: AWS::CodeStarNotifications::NotificationRule
+    Properties:
+      DetailType: FULL
+      Status: ENABLED
+      EventTypeIds:
+        - codepipeline-pipeline-pipeline-execution-failed
+        - codepipeline-pipeline-pipeline-execution-succeeded
+      Name: PipelineNotificationRuleG3
+      Resource: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${OdooPipelineG3}'
+      Targets:
+        - TargetAddress: !Ref SNSTopic
+          TargetType: SNS
+
+  # Notification rules for CodeBuild
+  CodeBuildNotificationRuleG3:
+    Type: AWS::CodeStarNotifications::NotificationRule
+    Properties:
+      DetailType: FULL
+      Status: ENABLED
+      EventTypeIds:
+        - codebuild-project-build-state-failed
+        - codebuild-project-build-state-succeeded
+      Name: CodeBuildNotificationRuleG3
+      Resource: !Sub 'arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:${CodeBuildProject}'
+      Targets:
+        - TargetAddress: !Ref SNSTopic
+          TargetType: SNS
